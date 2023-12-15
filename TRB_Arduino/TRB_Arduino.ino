@@ -94,10 +94,8 @@ public:
           if(setts[0] <= 5 && setts[1] <= 5 && setts[2] <= 5){
             //all Colors low, choose random
             bar_color = CRGB(random(255), random(255), random(255));
-          } else if(setts[0] == 255) {
-            bar_color = CRGB(255, 255, 255);
           } else{
-            bar_color = CRGB(setts[0], setts[1], setts[2]);
+            bar_color = get_color();
           }
         }
 
@@ -230,12 +228,297 @@ public:
     }
 };
 
-class GameMode : public LEDMode {
+class WaveformMode : public LEDMode {
+private:
+    int fillLevel = 0;
+    bool filling = false;
+    float phaseShift = 0.0; // For sine wave generation
+
 public:
     void update(LEDSettingsManager settings) override {
-        // Placeholder for game mode
-        // Implement game logic here
+        bool buttonState = digitalRead(BUTTON_PIN);
+        filling = (buttonState == LOW);
+
+        if (filling && fillLevel < NUM_LEDS) {
+            fillLevel++;
+        } else if (!filling && fillLevel > 0) {
+            fillLevel--;
+        }
+
+        for (int i = 0; i < NUM_LEDS; i++) {
+            if (i < fillLevel) {
+                float waveValue = sin(i * 0.2 + phaseShift); // Sine wave calculation
+                waveValue = (waveValue + 1) / 2; // Normalize to 0-1
+
+                CRGB color = settings.is_dark() ? CRGB(random(255), random(255), random(255)) : settings.get_color();
+                leds[i] = color;
+                leds[i].fadeToBlackBy(255 * (1 - waveValue));
+            } else {
+                leds[i] = CRGB::Black;
+            }
+        }
+
+        phaseShift += 0.1; // Adjust for wave movement
+        if (phaseShift > TWO_PI) {
+            phaseShift -= TWO_PI;
+        }
+
+        delay(10); // Adjust delay for fill speed
     }
+};
+
+class TwinklesMode : public LEDMode {
+private:
+    // Twinkle parameters
+    int twinkleSpeed = 2;
+    int twinkleDensity = 1;
+    CRGB backgroundColor = CRGB::Black;
+    #define AUTO_SELECT_BACKGROUND_COLOR 0
+    #define COOL_LIKE_INCANDESCENT 0
+
+    CRGBPalette16 currentPalette;
+    CRGBPalette16 targetPalette;
+
+    static const CRGB RedGreenWhite_p[16];
+    static const CRGB Holly_p[16];
+    static const CRGB RedWhite_p[16];
+    static const CRGB BlueWhite_p[16];
+    static const CRGB FairyLight_p[16];
+    static const CRGB Snow_p[16];
+    static const CRGB RetroC9_p[16];
+    static const CRGB Ice_p[16];
+
+public:
+    TwinklesMode() {
+        // Initialize with a default palette
+        currentPalette = RainbowColors_p; // Replace with your default palette
+        targetPalette = currentPalette;
+    }
+
+    const CRGB* getPalette(int index){
+      switch(index){
+        case 0: return RedGreenWhite_p;
+        case 1: return Holly_p;
+        case 2: return RedWhite_p;
+        case 3: return BlueWhite_p;
+        case 4: return FairyLight_p;
+        case 5: return Snow_p;
+        case 6: return RetroC9_p;
+        case 7: return Ice_p;
+      }
+    }
+
+    void update(LEDSettingsManager settings) override {
+        CRGBSet ledSet(leds, NUM_LEDS);
+        drawTwinkles(ledSet);
+    }
+
+    void drawTwinkles(CRGBSet& L) {
+      // "PRNG16" is the pseudorandom number generator
+      // It MUST be reset to the same starting value each time
+      // this function is called, so that the sequence of 'random'
+      // numbers that it generates is (paradoxically) stable.
+      uint16_t PRNG16 = 11337;
+      
+      uint32_t clock32 = millis();
+
+      // Set up the background color, "bg".
+      // if AUTO_SELECT_BACKGROUND_COLOR == 1, and the first two colors of
+      // the current palette are identical, then a deeply faded version of
+      // that color is used for the background color
+      CRGB bg;
+      if( (AUTO_SELECT_BACKGROUND_COLOR == 1) &&
+          (currentPalette[0] == currentPalette[1] )) {
+        bg = currentPalette[0];
+        uint8_t bglight = bg.getAverageLight();
+        if( bglight > 64) {
+          bg.nscale8_video( 16); // very bright, so scale to 1/16th
+        } else if( bglight > 16) {
+          bg.nscale8_video( 64); // not that bright, so scale to 1/4th
+        } else {
+          bg.nscale8_video( 86); // dim, scale to 1/3rd.
+        }
+      } else {
+        bg = backgroundColor; // just use the explicitly defined background color
+      }
+
+      uint8_t backgroundBrightness = bg.getAverageLight();
+      
+      for( CRGB& pixel: L) {
+        PRNG16 = (uint16_t)(PRNG16 * 2053) + 1384; // next 'random' number
+        uint16_t myclockoffset16= PRNG16; // use that number as clock offset
+        PRNG16 = (uint16_t)(PRNG16 * 2053) + 1384; // next 'random' number
+        // use that number as clock speed adjustment factor (in 8ths, from 8/8ths to 23/8ths)
+        uint8_t myspeedmultiplierQ5_3 =  ((((PRNG16 & 0xFF)>>4) + (PRNG16 & 0x0F)) & 0x0F) + 0x08;
+        uint32_t myclock30 = (uint32_t)((clock32 * myspeedmultiplierQ5_3) >> 3) + myclockoffset16;
+        uint8_t  myunique8 = PRNG16 >> 8; // get 'salt' value for this pixel
+
+        // We now have the adjusted 'clock' for this pixel, now we call
+        // the function that computes what color the pixel should be based
+        // on the "brightness = f( time )" idea.
+        CRGB c = computeOneTwinkle( myclock30, myunique8);
+
+        uint8_t cbright = c.getAverageLight();
+        int16_t deltabright = cbright - backgroundBrightness;
+        if( deltabright >= 32 || (!bg)) {
+          // If the new pixel is significantly brighter than the background color, 
+          // use the new color.
+          pixel = c;
+        } else if( deltabright > 0 ) {
+          // If the new pixel is just slightly brighter than the background color,
+          // mix a blend of the new color and the background color
+          pixel = blend( bg, c, deltabright * 8);
+        } else { 
+          // if the new pixel is not at all brighter than the background color,
+          // just use the background color.
+          pixel = bg;
+        }
+      }
+    }
+
+    CRGB computeOneTwinkle(uint32_t ms, uint8_t salt) {
+      //  This function takes a time in pseudo-milliseconds,
+      //  figures out brightness = f( time ), and also hue = f( time )
+      //  The 'low digits' of the millisecond time are used as 
+      //  input to the brightness wave function.  
+      //  The 'high digits' are used to select a color, so that the color
+      //  does not change over the course of the fade-in, fade-out
+      //  of one cycle of the brightness wave function.
+      //  The 'high digits' are also used to determine whether this pixel
+      //  should light at all during this cycle, based on the TWINKLE_DENSITY.
+      uint16_t ticks = ms >> (8-twinkleSpeed);
+      uint8_t fastcycle8 = ticks;
+      uint16_t slowcycle16 = (ticks >> 8) + salt;
+      slowcycle16 += sin8( slowcycle16);
+      slowcycle16 =  (slowcycle16 * 2053) + 1384;
+      uint8_t slowcycle8 = (slowcycle16 & 0xFF) + (slowcycle16 >> 8);
+      
+      uint8_t bright = 0;
+      if( ((slowcycle8 & 0x0E)/2) < twinkleDensity) {
+        bright = attackDecayWave8( fastcycle8);
+      }
+
+      uint8_t hue = slowcycle8 - salt;
+      CRGB c;
+      if( bright > 0) {
+        c = ColorFromPalette( currentPalette, hue, bright, NOBLEND);
+        if( COOL_LIKE_INCANDESCENT == 1 ) {
+          coolLikeIncandescent( c, fastcycle8);
+        }
+      } else {
+        c = CRGB::Black;
+      }
+      return c; 
+    }
+
+    uint8_t attackDecayWave8(uint8_t i) {
+      // This function is like 'triwave8', which produces a 
+      // symmetrical up-and-down triangle sawtooth waveform, except that this
+      // function produces a triangle wave with a faster attack and a slower decay:
+      //
+      //     / \ 
+      //    /     \ 
+      //   /         \ 
+      //  /             \ 
+      //
+      if( i < 86) {
+        return i * 3;
+      } else {
+        i -= 86;
+        return 255 - (i + (i/2));
+      }
+    }
+
+
+    // This function takes a pixel, and if its in the 'fading down'
+    // part of the cycle, it adjusts the color a little bit like the 
+    // way that incandescent bulbs fade toward 'red' as they dim.
+    void coolLikeIncandescent(CRGB& c, uint8_t phase) {
+      if( phase < 128) return;
+
+      uint8_t cooling = (phase - 128) >> 4;
+      c.g = qsub8( c.g, cooling);
+      c.b = qsub8( c.b, cooling * 2);
+    }
+
+    // Additional methods as needed
+};
+
+// A mostly red palette with green accents and white trim.
+// "CRGB::Gray" is used as white to keep the brightness more uniform.
+const CRGB TwinklesMode::RedGreenWhite_p[16] =
+{  CRGB::Red, CRGB::Red, CRGB::Red, CRGB::Red, 
+  CRGB::Red, CRGB::Red, CRGB::Red, CRGB::Red, 
+  CRGB::Red, CRGB::Red, CRGB::Gray, CRGB::Gray, 
+  CRGB::Green, CRGB::Green, CRGB::Green, CRGB::Green };
+
+// A mostly (dark) green palette with red berries.
+#define Holly_Green 0x00580c
+#define Holly_Red   0xB00402
+const CRGB TwinklesMode::Holly_p[16] =
+{  Holly_Green, Holly_Green, Holly_Green, Holly_Green, 
+  Holly_Green, Holly_Green, Holly_Green, Holly_Green, 
+  Holly_Green, Holly_Green, Holly_Green, Holly_Green, 
+  Holly_Green, Holly_Green, Holly_Green, Holly_Red 
+};
+
+// A red and white striped palette
+// "CRGB::Gray" is used as white to keep the brightness more uniform.
+const CRGB TwinklesMode::RedWhite_p[16] =
+{  CRGB::Red,  CRGB::Red,  CRGB::Red,  CRGB::Red, 
+  CRGB::Gray, CRGB::Gray, CRGB::Gray, CRGB::Gray,
+  CRGB::Red,  CRGB::Red,  CRGB::Red,  CRGB::Red, 
+  CRGB::Gray, CRGB::Gray, CRGB::Gray, CRGB::Gray };
+
+// A mostly blue palette with white accents.
+// "CRGB::Gray" is used as white to keep the brightness more uniform.
+const CRGB TwinklesMode::BlueWhite_p[16] =
+{  CRGB::Blue, CRGB::Blue, CRGB::Blue, CRGB::Blue, 
+  CRGB::Blue, CRGB::Blue, CRGB::Blue, CRGB::Blue, 
+  CRGB::Blue, CRGB::Blue, CRGB::Blue, CRGB::Blue, 
+  CRGB::Blue, CRGB::Gray, CRGB::Gray, CRGB::Gray };
+
+// A pure "fairy light" palette with some brightness variations
+#define HALFFAIRY ((CRGB::FairyLight & 0xFEFEFE) / 2)
+#define QUARTERFAIRY ((CRGB::FairyLight & 0xFCFCFC) / 4)
+const CRGB TwinklesMode::FairyLight_p[16] =
+{  CRGB::FairyLight, CRGB::FairyLight, CRGB::FairyLight, CRGB::FairyLight, 
+  HALFFAIRY,        HALFFAIRY,        CRGB::FairyLight, CRGB::FairyLight, 
+  QUARTERFAIRY,     QUARTERFAIRY,     CRGB::FairyLight, CRGB::FairyLight, 
+  CRGB::FairyLight, CRGB::FairyLight, CRGB::FairyLight, CRGB::FairyLight };
+
+// A palette of soft snowflakes with the occasional bright one
+const CRGB TwinklesMode::Snow_p[16] =
+{  0x304048, 0x304048, 0x304048, 0x304048,
+  0x304048, 0x304048, 0x304048, 0x304048,
+  0x304048, 0x304048, 0x304048, 0x304048,
+  0x304048, 0x304048, 0x304048, 0xE0F0FF };
+
+// A palette reminiscent of large 'old-school' C9-size tree lights
+// in the five classic colors: red, orange, green, blue, and white.
+#define C9_Red    0xB80400
+#define C9_Orange 0x902C02
+#define C9_Green  0x046002
+#define C9_Blue   0x070758
+#define C9_White  0x606820
+const CRGB TwinklesMode::RetroC9_p[16] =
+{  C9_Red,    C9_Orange, C9_Red,    C9_Orange,
+  C9_Orange, C9_Red,    C9_Orange, C9_Red,
+  C9_Green,  C9_Green,  C9_Green,  C9_Green,
+  C9_Blue,   C9_Blue,   C9_Blue,
+  C9_White
+};
+
+// A cold, icy pale blue palette
+#define Ice_Blue1 0x0C1040
+#define Ice_Blue2 0x182080
+#define Ice_Blue3 0x5080C0
+const CRGB TwinklesMode::Ice_p[16] =
+{
+  Ice_Blue1, Ice_Blue1, Ice_Blue1, Ice_Blue1,
+  Ice_Blue1, Ice_Blue1, Ice_Blue1, Ice_Blue1,
+  Ice_Blue1, Ice_Blue1, Ice_Blue1, Ice_Blue1,
+  Ice_Blue2, Ice_Blue2, Ice_Blue2, Ice_Blue3
 };
 
 
@@ -243,7 +526,8 @@ LEDMode* currentMode;
 RunningDotMode runningDotMode;
 LightSwitchMode lightSwitchMode;
 GradualFillMode gradualFillMode;
-GameMode gameMode;
+WaveformMode waveformMode;
+TwinklesMode twinklesMode;
 
 LEDSettingsManager settings;
 
@@ -297,7 +581,8 @@ void loop() {
         case 0: currentMode = &runningDotMode; break;
         case 1: currentMode = &lightSwitchMode; break;
         case 2: currentMode = &gradualFillMode; break;
-        case 3: currentMode = &gameMode; break;
+        case 3: currentMode = &waveformMode; break;
+        case 4: currentMode = &twinklesMode; break;
         // Additional cases for other modes
     }
     currentMode->update(settings);    

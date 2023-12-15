@@ -19,7 +19,10 @@ When the buzzer is pressed, a single light runs down the line. press multiple ti
 A simple light switch. uses COLORS for light color - be aware, that many LEDs lit up at once cause color fades due to voltage drops.
 ### 2: Pressure Bar
 While the buzzer is pressed the leds start to fill in the set color (or random color if all colors are 0)
-
+### 3: Waveform Mode
+Similar to Pressure Bar, but with sine-wobbles on the color
+### 4: Twinkle
+Made for Cloud lamps, there are random twinkles popping up in different colors
 
 ## Settings:
 When you set Dipswitch 4 to High, you enter Settings mode. You can now view settings selected through dip switches 1-3. They will be displayed as a progress bar on the LED strip. To adjust a setting, select it through dip 1-3, hold down the buzzer (progress bar starts blinking) and turn the potentiometer. Release the buzzer to log the value. Make sure to set dip 4 to false when you are done, this goes back to run-mode and saves your settings to EEPROM. If you don't return to run-mode, settings are not saved!
