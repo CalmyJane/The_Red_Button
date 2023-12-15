@@ -35,9 +35,9 @@ enum LEDSetting {
     COLOR_BLUE,
     SPEED,
     NUMBER_LEDS,
-    RESERVED1,
-    RESERVED2,
-    RESERVED3
+    TWINKLE_SPEED,
+    TWINKLE_DENSITY,
+    TWINKLE_PALETTE
     // Add other settings as needed
 };
 
@@ -131,6 +131,18 @@ public:
         return setts;
     }
 
+    byte get_twinkle_speed() {
+      return setts[TWINKLE_SPEED];
+    }
+
+    byte get_twinkle_density() {
+      return setts[TWINKLE_DENSITY];
+    }
+
+    byte get_twinkle_palette() {
+      return setts[TWINKLE_PALETTE];
+    }
+
     void write_to_eeprom(){
       //writes the current settings to EEPROM
       for (int i = 0; i < 8; i++) {
@@ -138,8 +150,6 @@ public:
       }
       Serial.println("written to EEPROM");
     }
-
-    // Additional methods and properties can be added as needed
 };
 
 class LEDMode {
@@ -295,7 +305,7 @@ public:
         targetPalette = currentPalette;
     }
 
-    const CRGB* getPalette(int index){
+    static const CRGB* get_palette(int index){
       switch(index){
         case 0: return RedGreenWhite_p;
         case 1: return Holly_p;
@@ -308,8 +318,20 @@ public:
       }
     }
 
+    void setPalette(const CRGB* palette) {
+        for (int i = 0; i < 16; ++i) {
+            currentPalette[i] = palette[i];
+        }
+    }
+
     void update(LEDSettingsManager settings) override {
         CRGBSet ledSet(leds, NUM_LEDS);
+        twinkleSpeed = map(settings.get_twinkle_speed(), 0, 255, 0, 8);
+        twinkleDensity = map(settings.get_twinkle_density(), 0, 255, 0, 8);
+        byte paletteIndex = settings.get_twinkle_palette();
+        paletteIndex = map(paletteIndex, 0, 255, 0, 7);
+        const CRGB* palette = TwinklesMode::get_palette(paletteIndex);
+        setPalette(palette);
         drawTwinkles(ledSet);
     }
 
@@ -522,6 +544,94 @@ const CRGB TwinklesMode::Ice_p[16] =
 };
 
 
+class Flash {
+  private:
+    uint32_t bulkinessTimestamp;
+    uint32_t flashTimestamp;
+    int flashStart;
+    int flashEnd;
+    bool active;
+    int bulkCount;
+    int nextFlashTime;
+    bool bulkTriggered;
+    int bulkSize;
+    int currentFlashDuration;
+
+    int randomize(int value) {
+      return value * (100 - storm) / 100 + random(value * storm / 100);
+    }
+
+    CRGB randomizeBrightness(CRGB color) {
+      uint8_t brght = random(constrain(brightness - 50, 0, 255), brightness); // Random brightness between 90% and 100%
+      return color.nscale8_video(brght);
+    }
+
+    void triggerFlash() {
+      bulkinessTimestamp = millis();
+      active = true;
+      bulkCount++;
+
+      // Spawn a new flash
+      flashStart = random(num_leds - length);
+      flashEnd = flashStart + randomize(length);
+
+      if(brightness >= 20){
+        // Light up the LEDs in the flash area with randomized brightness
+        for (int i = flashStart; i <= flashEnd; i++) {
+          leds[i] = randomizeBrightness(CRGB::White);
+        }        
+      }
+
+
+      // Calculate the next flash time and duration
+      nextFlashTime = randomize(bulkFrequency);
+      currentFlashDuration = randomize(speed);
+      flashTimestamp = millis();
+    }
+
+  public:
+    int bulkFrequency = 200;
+    int speed = 15;
+    int num_leds = 300;
+    int length = 50;
+    int storm = 10;
+    int bulkyness = 5;
+    uint8_t brightness = 255;
+
+    Flash() : active(false), bulkCount(0), bulkTriggered(false) {
+      bulkinessTimestamp = millis();
+      flashTimestamp = millis();
+      nextFlashTime = randomize(bulkFrequency);
+    }
+
+    void triggerBulk() {
+      bulkTriggered = true;
+      bulkCount = 0;
+      bulkSize = randomize(bulkyness);
+    }
+
+    void update() {
+      uint32_t currentTime = millis();
+
+      // If there is an active flash and its duration is over, remove it
+      if (active && currentTime - flashTimestamp >= currentFlashDuration) {
+        // for (int i = flashStart; i <= flashEnd; i++) {
+        //   leds[i] = CRGB::Black;
+        // }
+        active = false;
+      }
+
+      // If a bulk is triggered and enough time has passed, create a new flash in bulk
+      if (bulkTriggered && bulkCount < bulkSize && currentTime - bulkinessTimestamp >= nextFlashTime) {
+        triggerFlash();
+      } else if (bulkCount >= bulkSize) {
+        // If the bulk is complete, reset the bulkTriggered flag
+        bulkTriggered = false;
+      }
+    }
+};
+
+
 LEDMode* currentMode;
 RunningDotMode runningDotMode;
 LightSwitchMode lightSwitchMode;
@@ -529,10 +639,18 @@ GradualFillMode gradualFillMode;
 WaveformMode waveformMode;
 TwinklesMode twinklesMode;
 
+Flash flash;
+uint32_t lastFlashUpdate = millis();
+uint32_t flashbutton_timestamp = millis();
+uint32_t flashbutton_max_rate = 100;
+
 LEDSettingsManager settings;
 
 bool prev_button_state = false;
 bool settings_modified = false;
+bool flashing = false;
+
+
 
 void setup() {
     FastLED.addLeds<LED_TYPE, LED_PIN, COLOR_ORDER>(leds, NUM_LEDS);
@@ -543,6 +661,9 @@ void setup() {
     pinMode(DIP2, INPUT_PULLUP);
     pinMode(DIP3, INPUT_PULLUP);
     pinMode(DIP4, INPUT_PULLUP);
+    flash.bulkFrequency = 150;
+    flash.storm = 95;
+    flash.bulkyness = 6;
     Serial.begin(9600);
     currentMode = &runningDotMode; // Default mode
 }
@@ -586,6 +707,31 @@ void loop() {
         // Additional cases for other modes
     }
     currentMode->update(settings);    
+    
+    if(dip_number == 4){
+      //Twinkle Mode, also enable Flashes
+      int button_state = !digitalRead(BUTTON_PIN);
+      if(button_state && !prev_button_state && millis() - flashbutton_timestamp >= flashbutton_max_rate){
+        flashing = !flashing;
+        flash.triggerBulk();
+        flashbutton_timestamp = millis();
+      } else {
+        prev_button_state = button_state;
+        //FLASH RATE
+        uint32_t flashInterval = random(2500) + 4000;
+        uint32_t currentTime = millis();
+        if (currentTime - lastFlashUpdate >= flashInterval && flashing) {
+          flash.triggerBulk();
+          lastFlashUpdate = currentTime;
+        }
+        //FLASH BRIGHTNESS
+        flash.brightness = 255;        
+      }
+
+      flash.update();  
+    
+    }
+
   }
   FastLED.show();
 }
